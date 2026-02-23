@@ -5,9 +5,11 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 
-const API = import.meta.env.VITE_API_BASE_URL;
-const FIELD_GALAXY_BASE_URL = `${API}/api/galaxy/field`;
-const WORKS_BASE_URL = `${API}/api/works`;
+const API_BASE =
+  import.meta.env.VITE_API_BASE?.replace(/\/$/, '') ||
+  'http://localhost:3000';
+const FIELD_GALAXY_BASE_URL = `${API_BASE}/api/galaxy/field`;
+const WORKS_BASE_URL = `${API_BASE}/api/works`;
 const FIELD_OPTIONS = [
   { value: 'quantum_mechanics', label: 'Quantum Mechanics' },
   { value: 'machine_learning', label: 'Machine Learning' },
@@ -460,12 +462,10 @@ export default function App() {
         };
       }
 
-      const requestUrl = new URL(
-        `${WORKS_BASE_URL}/${encodeURIComponent(paperId)}/references`
-      );
-      requestUrl.searchParams.set('limit', String(REFERENCE_LIMIT));
-
-      const response = await fetch(requestUrl.toString());
+      const requestUrl = `${WORKS_BASE_URL}/${encodeURIComponent(
+        paperId
+      )}/references?limit=${encodeURIComponent(String(REFERENCE_LIMIT))}`;
+      const response = await fetch(requestUrl);
       if (!response.ok) {
         let backendMessage = `Request failed with status ${response.status}`;
         try {
@@ -689,11 +689,9 @@ export default function App() {
     window.addEventListener('resize', onResize);
 
     const fetchFieldGalaxy = async (fallback = false) => {
-      const requestUrl = new URL(`${FIELD_GALAXY_BASE_URL}/${encodeURIComponent(selectedField)}`);
-      if (fallback) {
-        requestUrl.searchParams.set('fallback', 'true');
-      }
-
+      const requestUrl = `${FIELD_GALAXY_BASE_URL}/${encodeURIComponent(selectedField)}${
+        fallback ? '?fallback=true' : ''
+      }`;
       const response = await fetch(requestUrl);
       if (!response.ok) {
         let backendMessage = `Request failed with status ${response.status}`;

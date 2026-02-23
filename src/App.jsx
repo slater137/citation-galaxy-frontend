@@ -5,37 +5,37 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 
-const PAPERS_URL = 'http://localhost:3000/papers';
+const BACKEND_BASE_URL = 'http://localhost:3000';
+const FIELD_GALAXY_BASE_URL = `${BACKEND_BASE_URL}/api/galaxy/field`;
+const WORKS_BASE_URL = `${BACKEND_BASE_URL}/api/works`;
 const FIELD_OPTIONS = [
-  'physics',
-  'mathematics',
-  'computer science',
-  'neuroscience',
-  'economics',
-  'philosophy'
+  { value: 'quantum_mechanics', label: 'Quantum Mechanics' },
+  { value: 'machine_learning', label: 'Machine Learning' },
+  { value: 'neuroscience', label: 'Neuroscience' },
+  { value: 'philosophy', label: 'Philosophy' }
 ];
 const FIELD_STAR_COLORS = Object.freeze({
-  physics: 0x5da9e9,
-  mathematics: 0x72d6c9,
-  'computer science': 0x6bcb77,
+  quantum_mechanics: 0x5da9e9,
+  machine_learning: 0x6bcb77,
   neuroscience: 0xf4a261,
-  economics: 0x2a9d8f,
   philosophy: 0x9d4edd
 });
-const MIN_STAR_SIZE = 0.5;
-const MAX_STAR_SIZE = 6;
+const MIN_STAR_SIZE = 0.35;
+const MAX_STAR_SIZE = 5.4;
+const STAR_SIZE_POWER = 0.7;
 const DEPTH_STEP = 200;
 const CAMERA_TRANSITION_MS = 800;
 const CAMERA_LAYER_OFFSET = 120;
-const REFERENCE_LIMIT = 35;
+const REFERENCE_LIMIT = 100;
 const BLOOM_STRENGTH = 0.36;
 const BLOOM_RADIUS = 0.28;
 const BLOOM_THRESHOLD = 0.2;
 const LAYER_FADE_MS = 420;
 const PRE_ZOOM_MS = 220;
+const MIN_INITIAL_GALAXY_WORKS = 200;
 
 function getFieldStarColor(field) {
-  return new THREE.Color(FIELD_STAR_COLORS[field] ?? FIELD_STAR_COLORS.physics);
+  return new THREE.Color(FIELD_STAR_COLORS[field] ?? FIELD_STAR_COLORS.quantum_mechanics);
 }
 
 function easeInOutCubic(value) {
@@ -46,27 +46,20 @@ function easeInOutCubic(value) {
   return 1 - Math.pow(-2 * value + 2, 3) / 2;
 }
 
-function normalizeWorkToPaper(work) {
-  const citedByCount = Number.isFinite(work?.cited_by_count) ? work.cited_by_count : 0;
-  const doi = typeof work?.doi === 'string'
-    ? work.doi.replace(/^https?:\/\/doi\.org\//i, '').trim() || null
-    : null;
+function getPaperId(paper) {
+  if (!paper || typeof paper !== 'object') {
+    return null;
+  }
 
-  return {
-    title: work?.display_name || 'Untitled',
-    authors: Array.isArray(work?.authorships)
-      ? work.authorships
-        .map((authorship) => authorship?.author?.display_name)
-        .filter(Boolean)
-        .slice(0, 3)
-      : [],
-    publication_year: work?.publication_year || null,
-    cited_by_count: citedByCount,
-    doi,
-    primary_topic: work?.primary_topic?.display_name
-      || (Array.isArray(work?.concepts) ? work.concepts[0]?.display_name || null : null),
-    size: Number(Math.log10(citedByCount + 1).toFixed(4))
-  };
+  if (typeof paper.openalex_id === 'string' && paper.openalex_id.trim().length > 0) {
+    return paper.openalex_id.trim();
+  }
+
+  if (typeof paper.id === 'string' && paper.id.trim().length > 0) {
+    return paper.id.trim();
+  }
+
+  return null;
 }
 
 function wait(ms) {
@@ -89,9 +82,11 @@ function getPaperExternalUrl(paper) {
 
 export default function App() {
   const mountRef = useRef(null);
-  const [selectedField, setSelectedField] = useState('physics');
+  const [selectedField, setSelectedField] = useState('quantum_mechanics');
   const [currentDepth, setCurrentDepth] = useState(0);
   const [navigationStackSize, setNavigationStackSize] = useState(0);
+  const [notice, setNotice] = useState(null);
+  const [referenceLookup, setReferenceLookup] = useState({});
   const [status, setStatus] = useState({ loading: true, error: null });
   const [selectedPaper, setSelectedPaper] = useState(null);
   const currentDepthRef = useRef(0);
@@ -117,6 +112,8 @@ export default function App() {
     }
 
     setStatus({ loading: true, error: null });
+    setNotice(null);
+    setReferenceLookup({});
     setCurrentDepth(0);
     currentDepthRef.current = 0;
     navigationStackRef.current = [];
@@ -324,15 +321,13 @@ export default function App() {
 
     const createGalaxyLayer = (papers, depth, options = {}) => {
       const { paperId = null, initialOpacity = 1 } = options;
-      const paperLogs = papers
-        .map((paper) => Number(paper?.size))
-        .filter((value) => Number.isFinite(value));
       const citationValues = papers
         .map((paper) => Number(paper?.cited_by_count))
         .filter((value) => Number.isFinite(value));
-      const minLog = paperLogs.length > 0 ? Math.min(...paperLogs) : 0;
-      const maxLog = paperLogs.length > 0 ? Math.max(...paperLogs) : 0;
-      const logRange = maxLog - minLog;
+      const logCitationValues = citationValues.map((value) => Math.log10(Math.max(0, value) + 1));
+      const minLogCitation = logCitationValues.length > 0 ? Math.min(...logCitationValues) : 0;
+      const maxLogCitation = logCitationValues.length > 0 ? Math.max(...logCitationValues) : 1;
+      const logCitationRange = Math.max(1e-9, maxLogCitation - minLogCitation);
       const minCitation = citationValues.length > 0 ? Math.min(...citationValues) : 0;
       const maxCitation = citationValues.length > 0 ? Math.max(...citationValues) : 0;
       const citationRange = maxCitation - minCitation;
@@ -340,26 +335,35 @@ export default function App() {
       const minRadius = 5;
       const layerIndex = Math.abs(depth) / DEPTH_STEP;
       const spreadScale = Math.pow(0.85, layerIndex);
-      const sizeScale = 1 + Math.min(layerIndex * 0.06, 0.5);
+      const sizeScale = 1 + Math.min(layerIndex * 0.03, 0.2);
       const layerStars = [];
       const generatedStars = [];
 
       papers.forEach((paper) => {
-        const paperLog = Number(paper?.size);
-        const safeLog = Number.isFinite(paperLog) ? paperLog : minLog;
-        const normalized = logRange > 0 ? (safeLog - minLog) / logRange : 0.5;
-        const clampedNormalized = THREE.MathUtils.clamp(normalized, 0, 1);
+        const paperCitation = Number(paper?.cited_by_count);
+        const safeCitation = Number.isFinite(paperCitation) ? paperCitation : minCitation;
+        const logCitation = Math.log10(Math.max(0, safeCitation) + 1);
+        const normalizedLog = THREE.MathUtils.clamp(
+          (logCitation - minLogCitation) / logCitationRange,
+          0,
+          1
+        );
+        const sizeProgress = Math.pow(normalizedLog, STAR_SIZE_POWER);
+        const baseRadius = MIN_STAR_SIZE + ((MAX_STAR_SIZE - MIN_STAR_SIZE) * sizeProgress);
         const radius = THREE.MathUtils.clamp(
-          MIN_STAR_SIZE + clampedNormalized * (MAX_STAR_SIZE - MIN_STAR_SIZE),
+          baseRadius,
           MIN_STAR_SIZE,
           MAX_STAR_SIZE
         ) * sizeScale;
 
-        const paperCitation = Number(paper?.cited_by_count);
-        const safeCitation = Number.isFinite(paperCitation) ? paperCitation : minCitation;
         const citationNormalized =
           citationRange > 0 ? (safeCitation - minCitation) / citationRange : 0.5;
         const clampedCitation = THREE.MathUtils.clamp(citationNormalized, 0, 1);
+        const normalizedSize = THREE.MathUtils.clamp(
+          (baseRadius - MIN_STAR_SIZE) / (MAX_STAR_SIZE - MIN_STAR_SIZE),
+          0,
+          1
+        );
         const orbitalRadius = maxRadius - clampedCitation * (maxRadius - minRadius);
         const theta = Math.random() * Math.PI * 2;
         const phi = Math.acos(THREE.MathUtils.randFloatSpread(2));
@@ -370,11 +374,11 @@ export default function App() {
 
         const geometry = new THREE.SphereGeometry(radius, 12, 12);
         const baseColor = getFieldStarColor(selectedField);
-        const emissiveBase = THREE.MathUtils.lerp(1.3, 2.05, clampedNormalized);
+        const emissiveBase = THREE.MathUtils.lerp(0.9, 1.5, normalizedSize);
         const emissiveIntensity = THREE.MathUtils.clamp(
-          emissiveBase + Math.min(layerIndex * 0.08, 0.45),
-          1.2,
-          2.4
+          emissiveBase + Math.min(layerIndex * 0.05, 0.25),
+          0.9,
+          1.8
         );
         const material = new THREE.MeshStandardMaterial({
           color: baseColor,
@@ -447,64 +451,40 @@ export default function App() {
     };
 
     const fetchReferencePapers = async (paper) => {
-      if (!paper?.doi) {
-        return [];
+      const paperId = getPaperId(paper);
+      if (!paperId) {
+        return {
+          workId: null,
+          papers: [],
+          reason: 'invalid_work_id'
+        };
       }
 
-      const workLookupUrl = new URL('https://api.openalex.org/works');
-      workLookupUrl.searchParams.set('filter', `doi:${paper.doi}`);
-      workLookupUrl.searchParams.set('per-page', '1');
-      workLookupUrl.searchParams.set('select', 'id,referenced_works');
+      const requestUrl = new URL(
+        `${WORKS_BASE_URL}/${encodeURIComponent(paperId)}/references`
+      );
+      requestUrl.searchParams.set('limit', String(REFERENCE_LIMIT));
 
-      const workLookupResponse = await fetch(workLookupUrl.toString());
-      if (!workLookupResponse.ok) {
-        throw new Error('Failed to resolve selected paper references');
-      }
-
-      const workLookupPayload = await workLookupResponse.json();
-      const sourceWork = Array.isArray(workLookupPayload?.results)
-        ? workLookupPayload.results[0]
-        : null;
-
-      const referenceIds = Array.isArray(sourceWork?.referenced_works)
-        ? sourceWork.referenced_works
-          .map((referenceUrl) => {
-            if (typeof referenceUrl !== 'string') {
-              return null;
-            }
-
-            const match = referenceUrl.match(/W\d+$/i);
-            return match ? match[0] : null;
-          })
-          .filter(Boolean)
-          .slice(0, REFERENCE_LIMIT)
-        : [];
-
-      if (referenceIds.length === 0) {
-        return [];
-      }
-
-      const detailRequests = referenceIds.map(async (workId) => {
-        const referenceWorkUrl = new URL(`https://api.openalex.org/works/${workId}`);
-        referenceWorkUrl.searchParams.set(
-          'select',
-          'display_name,authorships,publication_year,cited_by_count,doi,primary_topic,concepts'
-        );
-
-        const referenceResponse = await fetch(referenceWorkUrl.toString());
-        if (!referenceResponse.ok) {
-          return null;
+      const response = await fetch(requestUrl.toString());
+      if (!response.ok) {
+        let backendMessage = `Request failed with status ${response.status}`;
+        try {
+          const errorPayload = await response.json();
+          if (typeof errorPayload?.message === 'string' && errorPayload.message.trim().length > 0) {
+            backendMessage = errorPayload.message.trim();
+          }
+        } catch (error) {
+          // keep default message
         }
+        throw new Error(backendMessage);
+      }
 
-        const referenceWork = await referenceResponse.json();
-        return normalizeWorkToPaper(referenceWork);
-      });
-
-      const referencePapers = (await Promise.all(detailRequests))
-        .filter(Boolean)
-        .sort((a, b) => b.cited_by_count - a.cited_by_count);
-
-      return referencePapers;
+      const payload = await response.json();
+      return {
+        workId: paperId,
+        papers: Array.isArray(payload?.papers) ? payload.papers : [],
+        reason: typeof payload?.reason === 'string' ? payload.reason : null
+      };
     };
 
     const drillIntoReferences = async (paper) => {
@@ -516,10 +496,12 @@ export default function App() {
       isTransitioning = true;
       if (mounted) {
         setStatus({ loading: true, error: null });
+        setNotice(null);
       }
 
       const activeLayer = galaxyLayers[galaxyLayers.length - 1];
-      const previousState = snapshotCurrentState(paper?.doi || paper?.title || null);
+      const selectedPaperId = getPaperId(paper) || paper?.doi || paper?.title || null;
+      const previousState = snapshotCurrentState(selectedPaperId);
 
       try {
         const referenceRequest = fetchReferencePapers(paper);
@@ -530,13 +512,34 @@ export default function App() {
         );
         await wait(PRE_ZOOM_MS);
 
-        const referencePapers = await referenceRequest;
+        const referenceResult = await referenceRequest;
+        const referencePapers = Array.isArray(referenceResult?.papers) ? referenceResult.papers : [];
+        const referenceReason = referenceResult?.reason || null;
+        const referenceWorkId = referenceResult?.workId || selectedPaperId;
         if (!mounted) {
           return;
         }
 
+        if (referenceWorkId) {
+          setReferenceLookup((current) => ({
+            ...current,
+            [referenceWorkId]: {
+              checked: true,
+              count: referencePapers.length,
+              reason: referenceReason
+            }
+          }));
+        }
+
         if (referencePapers.length === 0) {
-          throw new Error('No references found for this paper');
+          startCameraTransition(
+            previousState.cameraPosition.z,
+            previousState.cameraTarget.z,
+            PRE_ZOOM_MS
+          );
+          setStatus({ loading: false, error: null });
+          setNotice('No references found for this work.');
+          return;
         }
 
         navigationStackRef.current.push(previousState);
@@ -551,7 +554,7 @@ export default function App() {
         setCurrentDepth(nextDepth);
 
         const nextLayer = createGalaxyLayer(referencePapers, nextDepth, {
-          paperId: paper?.doi || paper?.title || null,
+          paperId: selectedPaperId,
           initialOpacity: 0
         });
         queueLayerOpacityTransition(nextLayer, 1);
@@ -685,18 +688,46 @@ export default function App() {
     renderer.domElement.addEventListener('click', onClick);
     window.addEventListener('resize', onResize);
 
+    const fetchFieldGalaxy = async (fallback = false) => {
+      const requestUrl = new URL(`${FIELD_GALAXY_BASE_URL}/${encodeURIComponent(selectedField)}`);
+      if (fallback) {
+        requestUrl.searchParams.set('fallback', 'true');
+      }
+
+      const response = await fetch(requestUrl);
+      if (!response.ok) {
+        let backendMessage = `Request failed with status ${response.status}`;
+        try {
+          const errorPayload = await response.json();
+          if (typeof errorPayload?.message === 'string' && errorPayload.message.trim().length > 0) {
+            backendMessage = errorPayload.message.trim();
+          }
+        } catch (error) {
+          // keep fallback error message
+        }
+        throw new Error(backendMessage);
+      }
+
+      return response.json();
+    };
+
     const loadPapers = async () => {
       try {
-        const requestUrl = new URL(PAPERS_URL);
-        requestUrl.searchParams.set('field', selectedField);
-        const response = await fetch(requestUrl);
+        let payload = await fetchFieldGalaxy(false);
+        let papers = Array.isArray(payload?.papers) ? payload.papers : [];
 
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`);
+        if (papers.length < MIN_INITIAL_GALAXY_WORKS) {
+          setNotice('Not enough highly-relevant works; loosening filter…');
+          payload = await fetchFieldGalaxy(true);
+          papers = Array.isArray(payload?.papers) ? payload.papers : [];
+        } else {
+          setNotice(null);
         }
 
-        const payload = await response.json();
-        const papers = Array.isArray(payload?.papers) ? payload.papers : [];
+        if (papers.length === 0) {
+          throw new Error('No papers found for this field');
+        }
+
         createGalaxyLayer(papers, 0, {
           paperId: 'root',
           initialOpacity: 1
@@ -752,6 +783,11 @@ export default function App() {
   }, [selectedField]);
 
   const selectedPaperUrl = getPaperExternalUrl(selectedPaper);
+  const selectedWorkId = getPaperId(selectedPaper);
+  const selectedReferenceState = selectedWorkId ? referenceLookup[selectedWorkId] : null;
+  const noReferencesConfirmed = Boolean(
+    selectedReferenceState?.checked && selectedReferenceState.count === 0
+  );
 
   return (
     <main className="app-shell" data-depth={currentDepth}>
@@ -768,8 +804,8 @@ export default function App() {
           onChange={(event) => setSelectedField(event.target.value)}
         >
           {FIELD_OPTIONS.map((field) => (
-            <option key={field} value={field}>
-              {field}
+            <option key={field.value} value={field.value}>
+              {field.label}
             </option>
           ))}
         </select>
@@ -789,6 +825,9 @@ export default function App() {
 
       {status.loading && <div className="status-banner">Loading papers...</div>}
       {status.error && <div className="status-banner status-error">{status.error}</div>}
+      {!status.loading && !status.error && notice && (
+        <div className="status-banner status-info">{notice}</div>
+      )}
 
       {tooltip.visible && (
         <div
@@ -813,12 +852,17 @@ export default function App() {
               : 'N/A'}
           </div>
           <div className="selected-paper-meta">Citations: {selectedPaper.cited_by_count ?? 0}</div>
+          {noReferencesConfirmed && (
+            <div className="selected-paper-meta selected-paper-empty">
+              No references found for this work.
+            </div>
+          )}
           <div className="selected-paper-actions">
             <button
               type="button"
               className="panel-button panel-button-primary"
               onClick={() => exploreActionRef.current(selectedPaper)}
-              disabled={status.loading}
+              disabled={status.loading || noReferencesConfirmed}
             >
               Explore References
             </button>

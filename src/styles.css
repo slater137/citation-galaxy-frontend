@@ -108,6 +108,11 @@ body,
   color: #ffb4b4;
 }
 
+.status-info {
+  border-color: rgba(162, 202, 255, 0.64);
+  color: #d7e8ff;
+}
+
 .tooltip {
   position: absolute;
   z-index: 3;
@@ -166,6 +171,10 @@ body,
   color: #c8dcff;
   font-size: 12px;
   line-height: 1.35;
+}
+
+.selected-paper-empty {
+  color: #ffd7a3;
 }
 
 .selected-paper-actions {

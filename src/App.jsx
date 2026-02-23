@@ -5,9 +5,9 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 
-const BACKEND_BASE_URL = 'http://localhost:3000';
-const FIELD_GALAXY_BASE_URL = `${BACKEND_BASE_URL}/api/galaxy/field`;
-const WORKS_BASE_URL = `${BACKEND_BASE_URL}/api/works`;
+const API = import.meta.env.VITE_API_BASE_URL;
+const FIELD_GALAXY_BASE_URL = `${API}/api/galaxy/field`;
+const WORKS_BASE_URL = `${API}/api/works`;
 const FIELD_OPTIONS = [
   { value: 'quantum_mechanics', label: 'Quantum Mechanics' },
   { value: 'machine_learning', label: 'Machine Learning' },
